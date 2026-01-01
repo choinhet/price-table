@@ -107,7 +107,8 @@ if __name__ == "__main__":
     df = df[df["Saldo D. Att"] > 0]
 
     total_pa = df["Preço Adiantamento"].sum()
-    total_n_pa = df[df["Quais Parcelas"].apply(len) > 0]["Parcelas Adiantadas"].sum()
+    df.loc[df["Quais Parcelas"].apply(len) == 0, "Parcelas Adiantadas"] = 0
+    total_n_pa = df["Parcelas Adiantadas"].sum()
     last_p = df["Data"].max()
     avg_ad = df["Preço Adiantamento"].mean()
 
