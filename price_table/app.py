@@ -5,19 +5,11 @@ import streamlit as st
 if __name__ == "__main__":
     st.set_page_config(layout="wide")
 
-    if "reset_adp" not in st.session_state:
-        st.session_state["reset_adp"] = False
-
-
-    def reset_adp_callback():
-        st.session_state["reset_adp"] = True
-
-
     col1, col2, col3 = st.columns(3)
     with col1:
         n = st.number_input("Número de parcelas", value=48, min_value=1, key="n")
         pmt = st.number_input("Valor da parcela", value=1566.30, key="pmt", format="%.2f")
-        adp = st.number_input("Adiantamento padrão", value=1, key="adp", on_change=reset_adp_callback)
+        adp = st.number_input("Adiantamento padrão", value=1, key="adp")
     with col2:
         v = st.number_input("Valor do investimento", value=51_621.65, key="v", format="%.2f")
         m = st.date_input("Mês de início", value="2025-09-01", key="m")
@@ -36,23 +28,20 @@ if __name__ == "__main__":
 
     # Values
     df["Data"] = df["Data"].dt.strftime("%Y-%m")
-
-    # Dynamic Col Init
-    table_cache = st.session_state.get("table_cache")
     df["Parcelas Adiantadas"] = adp
-    df["Quais Parcelas"] = ""
-
-    if table_cache is not None and not st.session_state["reset_adp"]:
-        df["Parcelas Adiantadas"] = table_cache["Parcelas Adiantadas"]
-        df["Quais Parcelas"] = table_cache["Quais Parcelas"]
-
-    df["Parcelas Adiantadas"] = df["Parcelas Adiantadas"].fillna(adp)
-    df["Quais Parcelas"] = df["Quais Parcelas"].fillna("")
-    st.session_state["reset_adp"] = False
 
     # Input col triggering
-    for idx, row in st.session_state.get("table", {}).get("edited_rows", {}).items():
-        df.loc[idx, "Parcelas Adiantadas"] = row["Parcelas Adiantadas"]
+    st.session_state["edited_cache"] = {
+        **st.session_state.get("edited_cache", {}),
+        **st.session_state.get("table", {}).get("edited_rows", {})
+    }
+
+    edited_cache = st.session_state.get("edited_cache", {})
+
+    # Cache set
+    for idx, it in edited_cache.items():
+        for _k, _v in it.items():
+            df.loc[idx, _k] = _v
 
     # Calculations
     qp = []
@@ -61,8 +50,6 @@ if __name__ == "__main__":
     for i in range(len(df)):
         cur_total_pa = df.loc[0:i - 1, "Parcelas Adiantadas"].sum()
         cur_pa = df.loc[i, "Parcelas Adiantadas"]
-        if pd.isna(cur_pa):
-            cur_pa = adp
 
         rp = n - cur_total_pa
         cur_qp = list(range(int(rp), int(rp - cur_pa), -1))
@@ -81,6 +68,7 @@ if __name__ == "__main__":
 
     df["Quais Parcelas"] = qp
     df["Preço Adiantamento"] = pa_tot
+    df["Total Mês"] = pmt + df["Preço Adiantamento"]
     df["Desconto"] = desc
 
     rolling_v = [v]
@@ -120,6 +108,8 @@ if __name__ == "__main__":
 
     total_pa = df["Preço Adiantamento"].sum()
     total_n_pa = df[df["Quais Parcelas"].apply(len) > 0]["Parcelas Adiantadas"].sum()
+    last_p = df["Data"].max()
+    avg_ad = df["Preço Adiantamento"].mean()
 
     # Formats
     df["Saldo Devedor"] = df["Saldo Devedor"].apply(lambda x: format(x, ",.2f"))
@@ -127,9 +117,10 @@ if __name__ == "__main__":
     df["Juros"] = df["Juros"].apply(lambda x: format(x, ",.2f"))
     df["Amortização"] = df["Amortização"].apply(lambda x: format(x, ",.2f"))
     df["Preço Adiantamento"] = df["Preço Adiantamento"].apply(lambda x: format(x, ",.2f"))
+    df["Total Mês"] = df["Total Mês"].apply(lambda x: format(x, ",.2f"))
     df["Desconto"] = df["Desconto"].apply(lambda x: format(x, ",.2f"))
 
-    st.session_state["table_cache"] = st.data_editor(
+    st.data_editor(
         df,
         hide_index=True,
         height="stretch",
@@ -148,6 +139,12 @@ if __name__ == "__main__":
     total_nper = df.shape[0]
     total_paid = (pmt * total_nper) + total_pa
 
-    st.text(f"Total parcelas: {total_nper:.0f}")
-    st.text(f"Total de parcelas adiantadas: {total_n_pa:.0f}")
-    st.text(f"Total pago: {total_paid:,.2f}")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.text(f"Total pago: {total_paid:,.2f}")
+        st.text(f"Total parcelas: {total_nper:.0f}")
+        st.text(f"Última parcela: {last_p}")
+    with col2:
+        st.text(f"Total de parcelas adiantadas: {total_n_pa:.0f}")
+        st.text(f"Preço médio adiantamento: {avg_ad:,.2f}")
+        st.text(f"Média mensal: {avg_ad + pmt:,.2f}")
