@@ -3,10 +3,21 @@ import pandas as pd
 import streamlit as st
 
 if __name__ == "__main__":
+    st.set_page_config(layout="wide")
+
+    if "reset_adp" not in st.session_state:
+        st.session_state["reset_adp"] = False
+
+
+    def reset_adp_callback():
+        st.session_state["reset_adp"] = True
+
+
     col1, col2, col3 = st.columns(3)
     with col1:
         n = st.number_input("Número de parcelas", value=48, min_value=1, key="n")
         pmt = st.number_input("Valor da parcela", value=1566.30, key="pmt", format="%.2f")
+        adp = st.number_input("Adiantamento padrão", value=1, key="adp", on_change=reset_adp_callback)
     with col2:
         v = st.number_input("Valor do investimento", value=51_621.65, key="v", format="%.2f")
         m = st.date_input("Mês de início", value="2025-09-01", key="m")
@@ -25,7 +36,52 @@ if __name__ == "__main__":
 
     # Values
     df["Data"] = df["Data"].dt.strftime("%Y-%m")
-    df["Parcela"] = pmt
+
+    # Dynamic Col Init
+    table_cache = st.session_state.get("table_cache")
+    df["Parcelas Adiantadas"] = adp
+    df["Quais Parcelas"] = ""
+
+    if table_cache is not None and not st.session_state["reset_adp"]:
+        df["Parcelas Adiantadas"] = table_cache["Parcelas Adiantadas"]
+        df["Quais Parcelas"] = table_cache["Quais Parcelas"]
+
+    df["Parcelas Adiantadas"] = df["Parcelas Adiantadas"].fillna(adp)
+    df["Quais Parcelas"] = df["Quais Parcelas"].fillna("")
+    st.session_state["reset_adp"] = False
+
+    # Input col triggering
+    for idx, row in st.session_state.get("table", {}).get("edited_rows", {}).items():
+        df.loc[idx, "Parcelas Adiantadas"] = row["Parcelas Adiantadas"]
+
+    # Calculations
+    qp = []
+    pa_tot = []
+    desc = []
+    for i in range(len(df)):
+        cur_total_pa = df.loc[0:i - 1, "Parcelas Adiantadas"].sum()
+        cur_pa = df.loc[i, "Parcelas Adiantadas"]
+        if pd.isna(cur_pa):
+            cur_pa = adp
+
+        rp = n - cur_total_pa
+        cur_qp = list(range(int(rp), int(rp - cur_pa), -1))
+        cur_qp = list(filter(lambda x: x > i + 1, cur_qp))
+
+        pa = 0
+        for cur_qp_i in cur_qp:
+            d = cur_qp_i - i - 1
+            cur_pv = pmt / ((1 + j) ** d)
+            pa += cur_pv
+
+        cur_desc = (len(cur_qp) * pmt) - pa
+        qp.append(cur_qp)
+        pa_tot.append(pa)
+        desc.append(cur_desc)
+
+    df["Quais Parcelas"] = qp
+    df["Preço Adiantamento"] = pa_tot
+    df["Desconto"] = desc
 
     rolling_v = [v]
     rolling_j = [j * v]
@@ -48,14 +104,50 @@ if __name__ == "__main__":
     df["Amortização"] = rolling_a
     df["Saldo Devedor"] = rolling_v
 
+    i_sdv = df.loc[0, "Saldo Devedor"]
+    dva = []
+    for i in range(len(df)):
+        cur_qp = list(map(lambda x: int(x) - 1, df.loc[i, "Quais Parcelas"]))
+        cur_qp = list(filter(lambda x: x >= 0, cur_qp))
+        amt_qp = df.loc[cur_qp, "Amortização"].sum()
+        amt_p = df.loc[i, "Amortização"]
+        cur_dva = i_sdv - amt_qp - amt_p
+        i_sdv = cur_dva
+        dva.append(cur_dva)
+
+    df["Saldo D. Att"] = dva
+    df = df[df["Saldo D. Att"] > 0]
+
+    total_pa = df["Preço Adiantamento"].sum()
+    total_n_pa = df[df["Quais Parcelas"].apply(len) > 0]["Parcelas Adiantadas"].sum()
+
     # Formats
     df["Saldo Devedor"] = df["Saldo Devedor"].apply(lambda x: format(x, ",.2f"))
+    df["Saldo D. Att"] = df["Saldo D. Att"].apply(lambda x: format(x, ",.2f"))
     df["Juros"] = df["Juros"].apply(lambda x: format(x, ",.2f"))
     df["Amortização"] = df["Amortização"].apply(lambda x: format(x, ",.2f"))
-    df["Parcela"] = df["Parcela"].apply(lambda x: format(x, ",.2f"))
+    df["Preço Adiantamento"] = df["Preço Adiantamento"].apply(lambda x: format(x, ",.2f"))
+    df["Desconto"] = df["Desconto"].apply(lambda x: format(x, ",.2f"))
 
-    st.dataframe(
+    st.session_state["table_cache"] = st.data_editor(
         df,
         hide_index=True,
         height="stretch",
+        column_config={
+            **{
+                col: st.column_config.Column(disabled=True)
+                for col in df.columns
+            },
+            **{
+                "Parcelas Adiantadas": st.column_config.NumberColumn(min_value=0, step=1, width="small")
+            },
+        },
+        key="table",
     )
+
+    total_nper = df.shape[0]
+    total_paid = (pmt * total_nper) + total_pa
+
+    st.text(f"Total parcelas: {total_nper:.0f}")
+    st.text(f"Total de parcelas adiantadas: {total_n_pa:.0f}")
+    st.text(f"Total pago: {total_paid:,.2f}")
