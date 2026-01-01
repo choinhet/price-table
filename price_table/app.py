@@ -2,48 +2,14 @@ import numpy_financial as npf
 import pandas as pd
 import streamlit as st
 
-if __name__ == "__main__":
-    st.set_page_config(layout="wide")
 
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        n = st.number_input("Número de parcelas", value=48, min_value=1, key="n")
-        pmt = st.number_input("Valor da parcela", value=1566.30, key="pmt", format="%.2f")
-        adp = st.number_input("Adiantamento padrão", value=1, key="adp")
-    with col2:
-        v = st.number_input("Valor do investimento", value=51_621.65, key="v", format="%.2f")
-        m = st.date_input("Mês de início", value="2025-09-01", key="m")
-    with col3:
-        j = npf.rate(nper=n, pmt=-pmt, pv=v, fv=0, when="end")
-        st.text_input("Juros mensais (Calculado)", value=f"{j:.2%}")
-        t = n * pmt
-        st.text_input("Total (Calculado)", value=f"{t:,.2f}")
-
-    df = pd.DataFrame(
-        data={
-            "# Parcela": range(1, n + 1),
-            "Data": pd.date_range(m, periods=n, freq="ME"),
-        }
-    )
-
-    # Values
-    df["Data"] = df["Data"].dt.strftime("%Y-%m")
-    df["Parcelas Adiantadas"] = adp
-
-    # Input col triggering
-    st.session_state["edited_cache"] = {
-        **st.session_state.get("edited_cache", {}),
-        **st.session_state.get("table", {}).get("edited_rows", {})
-    }
-
-    edited_cache = st.session_state.get("edited_cache", {})
-
-    # Cache set
-    for idx, it in edited_cache.items():
-        for _k, _v in it.items():
-            df.loc[idx, _k] = _v
-
-    # Calculations
+def calculate(
+        df: pd.DataFrame,
+        n: int,
+        rate: float,
+        pmt: float,
+        pv: float,
+) -> pd.DataFrame:
     qp = []
     pa_tot = []
     desc = []
@@ -58,7 +24,7 @@ if __name__ == "__main__":
         pa = 0
         for cur_qp_i in cur_qp:
             d = cur_qp_i - i - 1
-            cur_pv = pmt / ((1 + j) ** d)
+            cur_pv = pmt / ((1 + rate) ** d)
             pa += cur_pv
 
         cur_desc = (len(cur_qp) * pmt) - pa
@@ -71,9 +37,9 @@ if __name__ == "__main__":
     df["Total Mês"] = pmt + df["Preço Adiantamento"]
     df["Desconto"] = desc
 
-    rolling_v = [v]
-    rolling_j = [j * v]
-    rolling_a = [pmt - j * v]
+    rolling_v = [pv]
+    rolling_j = [rate * pv]
+    rolling_a = [pmt - rate * pv]
 
     for i in range(1, len(df)):
         prev_v = rolling_v[i - 1]
@@ -81,7 +47,7 @@ if __name__ == "__main__":
         prev_a = rolling_a[i - 1]
 
         cur_v = prev_v - prev_a
-        cur_j = cur_v * j
+        cur_j = cur_v * rate
         cur_a = pmt - cur_j
 
         rolling_v.append(cur_v)
@@ -105,12 +71,72 @@ if __name__ == "__main__":
 
     df["Saldo D. Att"] = dva
     df = df[df["Saldo D. Att"] > 0]
-
-    total_pa = df["Preço Adiantamento"].sum()
     df.loc[df["Quais Parcelas"].apply(len) == 0, "Parcelas Adiantadas"] = 0
+    return df
+
+
+if __name__ == "__main__":
+    st.set_page_config(layout="wide")
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        n = st.number_input("Número de parcelas", value=48, min_value=1)
+        pmt = st.number_input("Valor da parcela", value=1566.30, format="%.2f")
+        adp = st.number_input("Adiantamento padrão", value=1)
+    with col2:
+        pv = st.number_input("Valor do investimento", value=51_621.65, format="%.2f")
+        init_month = st.date_input("Mês de início", value="2025-09-01")
+    with col3:
+        rate = npf.rate(nper=n, pmt=-pmt, pv=pv, fv=0, when="end")
+        st.text_input("Juros mensais (Calculado)", value=f"{rate:.2%}")
+        st.text_input("Total (Calculado)", value=f"{n * pmt:,.2f}")
+
+    df = pd.DataFrame(
+        data={
+            "# Parcela": range(1, n + 1),
+            "Data": pd.date_range(init_month, periods=n, freq="ME"),
+        }
+    )
+
+    # Values
+    df["Data"] = df["Data"].dt.strftime("%Y-%m")
+    df["Parcelas Adiantadas"] = adp
+
+    # Input col triggering
+    st.session_state["edited_cache"] = {
+        **st.session_state.get("edited_cache", {}),
+        **st.session_state.get("table", {}).get("edited_rows", {})
+    }
+
+    edited_cache = st.session_state.get("edited_cache", {})
+
+    # Cache set
+    for idx, it in edited_cache.items():
+        for _k, _v in it.items():
+            df.loc[idx, _k] = _v
+
+    price_variations = list()
+    for _i in range(0, 8):
+        _df = df.copy()
+        _df["Parcelas Adiantadas"] = _i
+        _df = calculate(_df, n, rate, pmt, pv)
+        _total_paid = (pmt * _df.shape[0]) + _df["Preço Adiantamento"].sum()
+        _avg = _total_paid / _df.shape[0]
+        price_variations.append({
+            "Adiantamentos Mensais": _i,
+            "Total": _total_paid,
+            "Média Mensal": _avg,
+        })
+
+    df = calculate(df.copy(), n, rate, pmt, pv)
+
+    # Metrics
+    total_pa = df["Preço Adiantamento"].sum()
     total_n_pa = df["Parcelas Adiantadas"].sum()
     last_p = df["Data"].max()
     avg_ad = df["Preço Adiantamento"].mean()
+    total_nper = df.shape[0]
+    total_paid = (pmt * df.shape[0]) + df["Preço Adiantamento"].sum()
 
     # Formats
     df["Saldo Devedor"] = df["Saldo Devedor"].apply(lambda x: format(x, ",.2f"))
@@ -137,9 +163,6 @@ if __name__ == "__main__":
         key="table",
     )
 
-    total_nper = df.shape[0]
-    total_paid = (pmt * total_nper) + total_pa
-
     col1, col2, col3 = st.columns(3)
     with col1:
         st.text(f"Total pago: {total_paid:,.2f}")
@@ -149,3 +172,12 @@ if __name__ == "__main__":
         st.text(f"Total de parcelas adiantadas: {total_n_pa:.0f}")
         st.text(f"Preço médio adiantamento: {avg_ad:,.2f}")
         st.text(f"Média mensal: {avg_ad + pmt:,.2f}")
+
+    pv_df = pd.DataFrame(price_variations)
+    st.line_chart(
+        pv_df,
+        x_label="Adiantamentos Mensais",
+        y_label="Valor",
+        x="Adiantamentos Mensais",
+        y=["Total", "Média Mensal"], height=500
+    )
